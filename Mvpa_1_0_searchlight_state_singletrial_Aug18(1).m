@@ -16,31 +16,40 @@
 %   骨架保留 Aug4 的: modal 开关 / dry_run / 时间戳 / dbclear / radius 批量 / LOSO(chunk=被试)。
 %   分类器用 cosmo_classify_libsvm(球内, 快); 单试次 beta 须已在与 mask 相同的 MNI 网格。
 % ⚠️ 待你确认的路径: single_trial 根目录、全脑 GM mask(必须和 beta 同网格)、每模态 sub_list。
+% 小规模复现修改：本文件已改为情绪调节项目的小规模测试版, 改动处均以 [小规模复现修改：] 标注, 汇总如下:
+%   (1) 工具箱路径改为本机 CoSMoMVPA; 本机 libsvm 为 3.17(CoSMo 要求>=3.18), 暂不加载;
+%   (2) 时间窗 0-9 不存在 → 0-6; radius 只跑 3; n_proc=1(不开并行池); dry_run=false;
+%   (3) 4 状态 → 3 条件: natural_viewing / perspective_substitution / cognitive_reappraisal;
+%   (4) 数据根目录、mask、被试列表(S1-S3)改为本项目; 被试文件夹名加 'S' 前缀;
+%   (5) 结果写到 Codex outputs 目录, 不写入数据盘; 输出文件名改为 3conds_smalltest;
+%   (6) 分类器改为 cosmo_classify_lda; 只计算每隔 2000 个体素取 1 个的中心点(center_ids)。
+%   (7) helper 中批量读取(cellstr)改回逐 trial 读取, 因本机 CoSMoMVPA 版本不支持 cellstr 输入。
+%   正式运行时: 恢复全部被试、删除 center_ids 行、按需改回 libsvm(需装 >=3.18)、换组水平 mask。
 % =========================================================================
 clear; clc;
 dbclear all;   % 清残留断点, 避免长循环停在 K>>
 
 % ------- 工具箱路径(请确保正确) -------
-addpath(genpath('CoSMoMVPA-v.1.1.0/'));
-addpath(genpath('libsvm-3.25/'));
+addpath(genpath('D:\tools\Matlab\CoSMoMVPA-master'));   % 小规模复现修改：原为相对路径 'CoSMoMVPA-v.1.1.0/', 改为本机 CoSMoMVPA 绝对路径
+% addpath(genpath('libsvm-3.25/'));   % 小规模复现修改：注释掉。本机只有 libsvm 3.17, CoSMo 要求 >=3.18, 本测试改用 LDA, 不需要 libsvm
 
 % =========================================================================
 % 0. 总开关 —— 只改这里
 % =========================================================================
 modal       = 'view';        % 'view' 或 'voice'
-dry_run     = true;          % true=只核对文件/维度并汇总, 不跑 searchlight
-time_window = '0-6';
-radius_list = [3, 5];        % cosmo 半径单位=体素; 数据2mm → radius=5 即半径10mm 的球
-n_proc      = 4;             % searchlight 并行 worker 数(=1 则不并行); 只提速, 不改变结果
+dry_run     = false;         % true=只核对文件/维度并汇总, 不跑 searchlight   % 小规模复现修改：true → false, 直接跑小规模 searchlight(维度核对信息仍会先打印)
+time_window = '0-6';         % 小规模复现修改：'0-9' → '0-6'。本项目单试次只有 0-1.5/0-3/0-6/1.5-3/3-4.5/3-6/4.5-6 七个窗, 没有 0-9
+radius_list = 3;             % cosmo 半径单位=体素; 数据2mm → radius=5 即半径10mm 的球   % 小规模复现修改：[3, 5] → 3, 只测一个半径
+n_proc      = 1;             % searchlight 并行 worker 数(=1 则不并行); 只提速, 不改变结果   % 小规模复现修改：4 → 1, 小规模测试不启动 parpool
 
 % ---- 4 状态 → 条件名(beta_info.mat 里的 condition 名; 屏蔽三合一) ----
 % 顺序 = target 1..4: 1全 2自然 3屏蔽 4闭
-state_labels = {'Focus(全)', 'Nature(自然)', 'Shielding(屏蔽)', 'Close(闭)'};
-cond_names   = cell(4,1);
-cond_names{1} = 'focus-clear';
-cond_names{2} = 'nature-clear';
-cond_names{3} = {'distancing-clear', 'distraction-clear', 'inhibition-clear'};  % 三合一 → target=3
-cond_names{4} = 'close-clear';
+% 小规模复现修改：原 4 状态(focus/nature/shield三合一/close)改为本项目 3 条件, 顺序与一级模型 NV, PS, CR 一致
+state_labels = {'NV(natural_viewing)', 'PS(perspective_substitution)', 'CR(cognitive_reappraisal)'};
+cond_names   = cell(3,1);
+cond_names{1} = 'natural_viewing';
+cond_names{2} = 'perspective_substitution';
+cond_names{3} = 'cognitive_reappraisal';
 nStates       = numel(state_labels);
 
 ts = @() datestr(now, 'yyyy-mm-dd HH:MM:SS');
@@ -53,9 +62,9 @@ fprintf('[%s] 4 状态: %s\n', ts(), strjoin(state_labels, ' | '));
 cfg = struct();
 switch lower(modal)
     case 'view'
-        cfg.base_path = 'H:\deinfo\deinfo_view\single_trial';   % 单试次 beta 根目录
-        cfg.mask_fn   = 'H:\deinfo_view\mask\GM\rmean_gm_mask.nii';  % ⚠️须与 beta 同 MNI 网格, 不符请换
-        cfg.sub_list  = [4, 5, 6, 7, 9, 10, 11, 13, 14, 15];    % 已做 single_trial 的视觉被试(有新增自行加)
+        cfg.base_path = 'F:\HeLAB\EEEEEEEmotional\617_single trial model';   % 单试次 beta 根目录   % 小规模复现修改：改为本项目单试次模型根目录
+        cfg.mask_fn   = 'F:\HeLAB\EEEEEEEmotional\617_single trial model\S1\0-6\mask.nii';  % ⚠️须与 beta 同 MNI 网格, 不符请换   % 小规模复现修改：暂用 S1 一级模型 mask(91x109x91, 2mm, 与 beta 同网格); 正式分析建议换组水平/灰质 mask
+        cfg.sub_list  = [1, 2, 3];    % 已做 single_trial 的视觉被试(有新增自行加)   % 小规模复现修改：只用 S1-S3 做 LOSO 测试(避开 covariate 数异常的 S12)
     case 'voice'
         cfg.base_path = 'H:\deinfo\deinfo_voice\single_trial';
         cfg.mask_fn   = 'H:\deinfo_voice\mask\GM\mean_gm_mask_2mm.nii';  % ⚠️同上, 须与 beta 同网格
@@ -68,7 +77,7 @@ if isempty(cfg.sub_list)
     error('modal=%s 的 sub_list 为空, 请先填入做了 single_trial 的被试编号。', modal);
 end
 
-save_path = fullfile(cfg.base_path, 'results_searchlight_LOSO_4states_singletrial');
+save_path = 'C:\Users\ASUS\Documents\Codex\2026-11-18\new-chat-2\outputs\results_searchlight_LOSO_3conds_smalltest';   % 小规模复现修改：测试结果不写入 F 盘数据目录, 改写到 Codex outputs
 if ~dry_run && ~exist(save_path, 'dir'); mkdir(save_path); end
 
 % =========================================================================
@@ -80,7 +89,7 @@ loaded_subs  = [];
 skipped_subs = {};
 trial_counts = [];   % 每被试样本数, 供核对
 for s = cfg.sub_list
-    subj_dir = fullfile(cfg.base_path, num2str(s), time_window);
+    subj_dir = fullfile(cfg.base_path, ['S' num2str(s)], time_window);   % 小规模复现修改：本项目被试文件夹名为 S1, S2..., 加 'S' 前缀
     ds_sub   = helper_load_singletrial_sub(subj_dir, cfg.mask_fn, cond_names, s);
     if isempty(ds_sub)
         fprintf('  [跳过] 被试 %d —— 无 beta_info.mat 或无匹配 trial (%s)\n', s, subj_dir);
@@ -118,9 +127,10 @@ fprintf('  targets 取值  : %s\n', num2str(unique(ds_all.sa.targets)'));
 % =========================================================================
 measure                    = @cosmo_crossvalidation_measure;
 measure_args               = struct();
-measure_args.classifier    = @cosmo_classify_libsvm;            % libsvm 远快于 fitcecoc
+measure_args.classifier    = @cosmo_classify_lda;               % libsvm 远快于 fitcecoc   % 小规模复现修改：libsvm → LDA(本机 libsvm 3.17 版本过低, CoSMo 会报 out of date)
 measure_args.partitions    = cosmo_nfold_partitioner(ds_all);   % LOSO 交叉验证(chunk=被试)
 measure_args.normalization = 'zscore';                          % 每折内 z 标准化(无泄漏)
+measure_args.center_ids    = 1:2000:size(ds_all.samples, 2);   % 小规模复现修改：新增。只计算每 2000 个体素取 1 个的中心点, 正式运行时删除此行
 
 if dry_run
     fprintf('\n[%s] (dry_run) 空跑结束: 未跑 searchlight, 未写结果。核对无误后把 dry_run 改为 false 再跑。\n', ts());
@@ -145,7 +155,7 @@ for r_idx = 1:numel(radius_list)
     fprintf('[%s] Searchlight 运行中(单试次样本多, 可能很久)...\n', ts());
     acc_map = cosmo_searchlight(ds_all, nbrhood, measure, measure_args);
 
-    save_filename = fullfile(save_path, sprintf('Group_LOSO_Searchlight_Acc_4states_singletrial_%s_r%g.nii', modal, radius));
+    save_filename = fullfile(save_path, sprintf('Group_LOSO_Searchlight_Acc_3conds_smalltest_%s_%s_r%g.nii', modal, time_window, radius));   % 小规模复现修改：文件名 4states_singletrial → 3conds_smalltest, 并加入时间窗
     cosmo_map2fmri(acc_map, save_filename);
     fprintf('[%s] radius=%g 完成 → %s\n', ts(), radius, save_filename);
 end
@@ -194,7 +204,9 @@ function ds_sub = helper_load_singletrial_sub(subj_dir, mask_fn, cond_names, sub
     end
     if isempty(all_paths), return; end
 
-    ds_sub      = cosmo_fmri_dataset(all_paths, 'mask', mask_fn);
+    % 小规模复现修改：本机 CoSMoMVPA-master 的 cosmo_fmri_dataset 不接受 cellstr(报 Could not find image format for <cell> input),
+    %   改回逐 trial 读取再 cosmo_stack, 顺序与 all_paths 相同, 结果不变
+    ds_sub      = cosmo_stack(cellfun(@(p) cosmo_fmri_dataset(p, 'mask', mask_fn), all_paths, 'UniformOutput', false));
     samples_sub = ds_sub.samples;
 
     valid_mask = ~any(isnan(samples_sub), 1) & ~any(samples_sub == 0, 1);
