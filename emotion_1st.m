@@ -12,12 +12,12 @@ spm_jobman('initcfg');
 %% 1. 参数配置
 
 % 填写需要运行的被试
-subjects_to_run = {'S17'};
+subjects_to_run = {'42'};
 
 parts_to_run = {'run1','run2','run3'};
 
 preproc_base_dir = 'F:\HeLAB\EEEEEEEmotional\preprocessing';
-timing_base_dir  = 'F:\HeLAB\EEEEEEEmotional\onset_in_different_format\onsets_new';
+timing_base_dir  = 'F:\HeLAB\EEEEEEEmotional\onset_in_different_format\onset_time';
 output_base_dir  = 'F:\HeLAB\EEEEEEEmotional\temporal';
 
 conditions = {
